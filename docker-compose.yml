@@ -1,0 +1,23 @@
+version: '3.8'
+services:
+  elasticsearch:
+    image: elasticsearch:8.4.2
+    volumes:
+      - ./elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml
+      - ./heap_options:/usr/share/elasticsearch/config/jvm.options.d/heap_options
+      - /Users/kwonheewoon/Workspace/elasticsearch/data:/my/path/to/elasticsearch/data
+      - /Users/kwonheewoon/Workspace/elasticsearch/logs:/my/path/to/elasticsearch/logs
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.4.2
+    volumes:
+      - ./kibana.yml:/usr/share/kibana/config/kibana.yml
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+
+# docker-compose -p ek-stack up -d

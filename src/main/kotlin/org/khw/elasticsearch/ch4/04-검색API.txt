@@ -1,0 +1,146 @@
+* 검색대상 지정
+    // 다수의 인덱스를 기준으로 조회 가능
+    GET my_index*,analyzer_test*,mapping_test/_search
+
+*검색 쿼리 저장 방법
+    - ES 전용 쿼리 DSL을 기술하는 방법
+    - 요청 주소줄에 q라는 매개변수를 넣고 그곳에 루씬 쿼리 문자열을 지정하는 방법
+    두 방법 모두 사용시 q 매개변수가 우선 작동
+
+    GET my_index/_search
+    {
+      "query": {
+        "match": {
+          "title": "hello"
+        }
+      }
+    }
+
+    GET my_index/_search?q=title:hello
+
+* match_all 쿼리
+    모든 문서를 매치하는 쿼리다 query 부분을 비워 두면 기본값으로 지정되는 쿼리
+    GET [인덱스]/_search
+    {
+        "query": {
+            "match_all": {}
+        }
+    }
+
+* match 쿼리
+    지정한 필드의 내용이 질의어와 매치되는 문서를 찾는 쿼리. 필드가 text 타입이라면 필드의 값도 질의어도 모두 애널라이저로 분석된다
+    기본 operator은 OR 이다(일부 일치하는 문서 검색)
+    operator AND로 지정하면 모든 텀이 매치되는 문서만 검색
+    GET [인덱스]/_search
+        {
+            "query": {
+                "match": {
+                    "fieldName" : {
+                        "query": "test query sentence" // 이 질의어 텍스트는 "test", "query", "sentence" 3개의 텀으로 나뉘어 질의
+                    }
+                }
+            }
+        }
+
+* term 쿼리
+    지정한 필드의 값이 질의어와 정확히 일치하는 문서를 찾는 쿼리. 대상 필드에 노멀라이저가 지정돼 있다면 질의어도 노멀라이저 처리를 거친다
+    term 쿼리는 keyword 타입과 잘 맞는다 질의어도 문서도 같은 노멀라이저 처리를 거치기 때문이다
+    text 타입은 역색인된 토큰과 질의어의 term과 정확히 일치해야 검색이 된다
+    GET [인덱스]/_search
+        {
+            "query": {
+                "term": {
+                    "fieldName": {
+                        "value": "hello"
+                    }
+                }
+            }
+        }
+
+* terms 쿼리
+    지정할 필드의 값이 질의어와 정확히 일치하는 문서를 찾는 쿼리. 질의어를 여러 개 지정할 수 있으며 하나 이상의 질의어가 일치하면 검색결과에 포함
+    GET [인덱스]/_search
+            {
+                "query": {
+                    "terms": {
+                        "fieldName": {
+                            ["hello", "world"]
+                        }
+                    }
+                }
+            }
+
+* range 쿼리
+    range 쿼리는 지정한 필드의 값이 특정 범위 내에 있는 문서를 찾는 쿼리
+    부하가 큰 쿼리 이므로 elasticsearch.yml에 search.allow_expensive_queries 설정을 false로 지정하면 문자열 검색 막을 수 있다
+    GET [인덱스]/_search
+            {
+                "query": {
+                    "range": {
+                        "fieldName": {
+                            "gte": 100,
+                            "lt": 200
+                        }
+                    }
+                }
+            }
+
+    날짜 시간 계산식에도 사용 가능
+    GET [인덱스]/_search
+            {
+                "query": {
+                    "range": {
+                        "dateField": {
+                            "gte": "2019-01-15T00:00:00.000Z||+36h/d",
+                            "lte": "now-3h/d"
+                        }
+                    }
+                }
+            }
+    - now : 현재 시각을 나타낸다
+    - ||  : 날짜와 시간 문자열의 마지막에 붙인다. 이 뒤에 붙는 문자열은 시간 계산식으로 파싱
+    - +와 -: 지정된 시간만큼 더하거나 빼는 연산
+    - /   : 버림을 수행 /d는 날짜 단위 이하의 시간을 버림
+
+* prefix 쿼리
+    필드의 값이 지정한 질의어로 시작하는 문서를 찾는 쿼리
+    GET [인덱스]/_search
+        {
+            "query": {
+                "prefix": {
+                    "fieldName" : {
+                        "value" : "hello"
+                    }
+                }
+            }
+        }
+
+    prefix도 무거운 쿼리이므로 서비스 쿼리에 부적합
+    서비스 쿼리에 사용해야 한다면 index 매핑에 index_prefixes 설정 추가
+    elasticsearch.yml에 search.allow_expensive_queries 설정을 false로 지정하면 index_prefixes 적용되지 않은 필드는 prefix 쿼리 사용 불가
+    PUT prefix_mapping_test
+    {
+      "mappings": {
+        "properties": {
+          "prefixField": {
+            "type": "text",
+            "index_prefixes": {
+              "min_chars": 3,
+              "max_chars": 5
+            }
+          }
+        }
+      }
+    }
+
+* exists 쿼리
+    지정한 필드를 포함한 문서를 검색
+    GET [인덱스]/_search
+    {
+        "query": {
+            "exists": {
+                "field": "fieldName"
+            }
+        }
+    }
+

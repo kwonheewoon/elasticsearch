@@ -1,0 +1,98 @@
+* bool 쿼리
+    여러 쿼리를 조합하여 검색하는 쿼리 must, must_not, filter, should의 4종류의 조건절에 다른 쿼리를 조합하여 사용
+
+    GET [인덱스]/_search
+    {
+        "query": {
+            "bool": {
+                "must": [ // 하위 쿼리는 모두 AND 조건으로 만족해야됨
+                    {"term": {"field1": {"value": "hello"}}},
+                    {"term": {"field2": {"value": "world"}}}
+                ],
+                "must_not":[ // 이 쿼리를 만족하는 문서는 최종 검색 결과에서 제외됨
+                    {"term": {"field4": {"value": "elasticsearch-test"}}}
+                ],
+                "filter":[ // 하위 쿼리는 모두 AND 조건으로 만족해야됨
+                    {"term": {"field3": {"value": true}}}
+                ],
+                "should":[ // minimum_should_match에 지정한 개수 이상의 하위 쿼리를 만족해야 최종 검색에 문서 포함 기본값 1 OR 조건과 같달
+                    {"match": {"field4": {"query": "elasticsearch"}}},
+                    {"match": {"field5": {"query": "lucene"}}}
+                ],
+                "minimum_should_match": 1
+            }
+        }
+    }
+
+* 쿼리 문맥과 필터 문맥
+    must와 filter는 모두 AND 조건으로 검색을 수행 점수를 계산하느냐 여부가 다르다
+    filter 조건에 들어간 쿼리는 단순히 문서의 매치 여부만을 판단하고 랭킹에 사용할 점수를 매기지 않는다
+    must_not도 점수를 매기지 않는다. 애초에 점수를 매기지 않고 단순히 조건을 만족하는지 여부만을 참과 거짓으로 따지는 검색 과정을
+    필터 문맥이라고 한다
+    문서가 주어진 검색 조건을 얼마나 더 잘 만족하는지 유사도 점수를 매기는 검색 과정은 쿼리 문맥이라고 한다
+    필터 문맥으로 검색한 결과는 쿼리 캐시에 저장돼 재활용 가능
+
+    쿼리 문맥(문서가 질의어와 얼마나 잘 매치되는가) : bool의 must, bool의 should, match, term등
+    필터 문맥(질의 조건을 만족하는가) : bool의 filter, bool의 must_not, exists, range, constant_score등
+
+* constant_score 쿼리
+    특정 검색 조건을 만족하는 모든 문서에 동일한 점수(보통 1)를 부여하는 용도로 사용됩니다.
+    이 쿼리는 검색 결과의 relevancy(관련성) 점수 계산을 무시하고, 단순히 조건에 맞는 문서를 찾는 데 중점을 둡니다.
+    constant_score 쿼리를 사용하면 검색 성능을 향상시킬 수 있습니다. 왜냐하면 복잡한 점수 계산을 수행하지 않기 때문입니다.
+
+    {
+      "query": {
+        "constant_score": {
+          "filter": {
+            "term": {"status": "active"}
+          },
+          "boost": 2.0
+        }
+      }
+    }
+    이 예시에서는 "status" 필드가 "active"인 모든 문서에 대해 동일한 점수(여기서는 기본값의 2배인 2.0)를 부여합니다.
+    boost를 사용함으로써, 이 쿼리를 만족하는 문서들이 다른 쿼리 조건을 만족하는 문서들보다 높은 점수를 받게 되어, 검색 결과에서의 우선순위가 올라가게 됩니다.
+
+* 라우팅
+    검색 API도 색인 API나 조회 API와 마찬가지로 라우팅을 제대로 지정해 주는 것이 좋다
+    GET [인덱스]/_search?routing=[라우팅]
+    {
+        "query": {
+            // ...
+        }
+    }
+    라우팅을 지정하지 않으면 전체 샤드에 검색 요청이 들어간다 반면 라우팅을 지정하면 정확히 한 샤드에만 검색 요청이 들어가므로 성능상 매우 이득
+
+* explain
+    검색을 수행하는 동안 쿼리의 각 하위 부분에서 점수가 어떻게 계산됐는지 설명, 디버깅 용도
+    GET [인덱스]/_search?explain=true
+
+* search_type
+    유사도 점수를 계산할 때 각 샤드 레벨에서 계산을 끝낼지 여부를 선택 할 수 있다
+    GET [인덱스]/_search?search_type=dfs_query_then_fetch
+    {
+        "query" : {
+            // ...
+        }
+    }
+    query_then_fetch : 기본 설정. 각 샤드레벨에서 유사도 점수 계산을 끝낸다 점수 계산이 부정확 할 수는 있지만 검색 성능의 차이가 크다
+    dfs_query_then_fetch : 모든 샤드로부터 정보를 모아 유사도 점수를 글로벌하게 계산. 점수 계산의 정확도는 올라가지만 검색 성능이 떨어진다
+
+* 검색 결과 정렬
+    GET [인덱스 이름]/_search
+    {
+        "query": {
+
+        },
+        "sort": [
+            {"field1": {"order": "desc"}},
+            {"field2": {"order": "asc"}},
+            "field3" // 기본 desc
+        ]
+    }
+
+    date, boolean, keyword 타입은 정렬대상 text 타입은 정렬 대상이 아니다 fielddata(역색인 전체를 읽어들여 힙 메모리에 적재)를 true로
+    지정하면 text 타입도 정렬에 사용할 수는 있다 하지만 fielddata 이용은 성능상 심각한 문제를 야기할 수 있어 가급적 사용 자제
+    _source, _doc도 정렬가능 기본 정렬이 _source 내림차순 정렬 _doc는 문서 번호 순서로 정렬
+    정렬 수행 중에는 필드의 값이 메모리에 올라가므로 좀 더 메로리를 적게 차지하는 integer, short, float 등의 타입으로 설계하는 것도 좋다
+    또한 정렬 옵션에 _source가 포함되지 않은 경우 ES는 유사도 점수를 계산하지 않는다

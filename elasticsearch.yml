@@ -1,0 +1,11 @@
+cluster.name: test-es # 클러스터 이름 지정
+node.name: test-es-node01 # 노드의 이름 지정, 노드 이름은 클래스터내에서 유일해야 함
+
+path:
+  data: /my/path/to/elasticsearch/data # 엘라스틱서치의 데이터를 저장할 경로를 지정 문서, 역색인, 클러스터 설정 등
+  logs: /my/path/to/elasticsearch/logs
+
+network.host: 0.0.0.0 # 엘라스틱서치와 바인딩될 네트워크 주소를 입력
+
+discovery.type: "single-node" # 단일 노드의 개발모드로 동작하여 다른 노드의 클러스터 참가 신청을 받지 않는다.
+xpack.security.enabled: false # 노드간의 TLS 통신적용, 인증 권한분리, 감사증적등의 설정 끔
