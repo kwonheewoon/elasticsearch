@@ -1,0 +1,70 @@
+* 클러스터 설정 API
+    클러스터 설정 확인
+        GET _cluster/settings
+
+        response
+        {
+          "persistent": {},
+          "transient": {}
+        }
+
+    클러스터 설정
+        PUT _cluster/settings
+        {
+          "persistent": {
+            "indices.breaker.total.limit" : "70%"
+          },
+          "transient": {
+            "cluster.routing.allocation.enable" : "primaries",
+            "indices.breaker.total.limit" : "90%"
+          }
+        }
+
+    적용 우선 순위는 transient > persistent > config/elasticsearch.yml 파일 순
+    persistent 설정은 모든 마스터 후보 노드의 path.data 경로내 파일로 저장된다.
+
+    클러스터 설정 제거
+        PUT _cluster/settings
+        {
+          "transient": {
+            "cluster.routing.allocation.enable" : null
+          }
+        }
+
+* cat API를 통한 클러스터 상태 조회
+    * GET _cat/health
+        클러스터의 전반적인 상태를 빠르게 조회, 현재 클러스터에 몇 개의 노드가 붙어 있는지, 활동중인 샤드가 몇개이고
+        복구 중인 샤드가 몇 개인지, 전체 복구율은 얼마나 되는지 등을 한 번에 알 수 있다.
+        또한 엘라스틱서치 클러스터의 상태를 알기 쉽게 green, yellow, red 상태로 구분해서 알려준다
+        모든 샤드가 잘 할당된 상태는 green, 적어도 모든 주 샤드가 할당된 상태는 yellow, 할당되지 못한 주 샤드가 하나라도
+        있으면 red 상태
+
+    * GET _cat/indices
+        인덱스의 종류와 상태를 조회한다. 각 인덱스에 몇개의 주 샤드와 복제본 샤드가 배정되었는지, 문서는 몇 개가 색인됐는지
+        용량은 얼마나 되는지 등을 확인할 수 있다. 디스크를 비워야 할 때 용량을 많이 차지하는 인덱스를 찾는 용도, 장애 상황 이후
+        샤드 복구 중인 상태에서 green으로 올라오지 못한 인덱스를 찾는 용도 등으로 자주 호출
+
+    * GET _cat/nodes
+        각 노드의 상태를 조회한다. 노드의 역할과 이름, ip, 힙 사용량, 평균 부하 등의 상태를 조회 노드목록과 힙 사용량 확인을 위해서 자주 호출
+
+    * GET _cat/shards
+        샤드의 상태를 조죄한다. 샤드에 문서가 몇 개 있는지, 크기는 얼마나 되는지, 어느 노드에 배치되었는지 등을 확인할 수 있다.
+        샤드의 크기가 너무 커지면 성능이 저하되기 시작한다. 샤드의 크기를 모니터랑하기 위해서 자주 호출된다. 초기화 중인 샤드 목록을 파악할 때도 호출
+
+    * GET _cat/segments
+        루씬 세그먼트의 상태를 조회한다.
+
+    * GET _cat/recovery
+        진행 중이거나 완료된 샤드 복구 작업에 대한 정보를 조회한다. 복구해야 할 파일의 개수나 크기, 진행률, 소요된 시간 등을 확인할 수 있다
+        크기가 큰 샤드를 복구할 때 앞으로 남은 작업 예상 시간을 가늠해 보는 용도 등으로 자주 호출
+
+    * GET _cat/allocation
+        샤드 할당과 관련된 정보를 조회한다. 각 노드에 샤드가 얼마나 할당되었는지, 노드에 할당되지 못한 샤드는 몇 개인지, 각 노드의 디스크 사용량은 얼마나 되는지
+        등을 확인할 수 있다
+    thread_pool : 각 노드의 스레드 풀 상태를 조회
+    master: 현재 마스터로 선출된 노드를 확인
+
+    * 공통 매개변수
+        h: 지정한 칼럼만 표시한다. GET _cat/health?h=status,active_shards_percent
+        s: 칼럼을 지정해서 결과를 정렬한다. GET _cat/indices?s=store.size:desc (용량이 큰 인덱스 순 정렬)
+        format: 출력 형식을 지정(text, json, yaml) 지정 가능 GET _cat/indices?format=json
