@@ -174,3 +174,109 @@
 이제, user_department-000001 인덱스가 생성되고 user_department라는 이름의 에일리어스가 설정됩니다. 이 인덱스는 쓰기 가능한 상태(is_write_index: true)로 설정되어,
 새로운 문서가 이 인덱스로 인덱싱됩니다.
 
+
+* 데이터 스트림
+    데이터 스트림은 내부적으로 여러 개의 인덱스로 구성되어 있다. 검색을 수행할 때는 해당 데이터스트림에 포함된 모든 인덱스를 대상으로 검색을 수행하고,
+    문서를 추가 색인할 때는 가장 최근에 생성된 단일 인덱스에 새 문서가 들어간다. 롤오버 시에는 최근 생성된 인덱스의 이름 끝 숫자를 하나 올린 새 인덱스가
+    생성된다. 즉, 데이터 스트림은 마치 여러 인덱스를 묶고 is_write_true 인덱스를 하나 둔 alias와 유사하게 동작한다.
+    이런 구조의 alias를 인덱스 템플릿과 연계해서 조금 더 시계열 데이터 사용 패턴에 맞게 정형화하고 간단하게 사용할 수 있도록 정제한 것이 데이터 스트림이라고 보면 된다.
+
+    데이터 스트림과 alias의 차이점은 데이터 스트림을 구성하는 인덱스는 뒷받침 인덱스(backing indices)라고 부르며 모두 hidden 속성이다.
+    이 뒷받침 인덱스는 이름 패턴이 고정이고, 롤오버 시 명시적인 새 인덱스 이름 지정이 불가능하다. 패턴은 .ds-<데이터 스트림 이름>-<yyyy.MM.dd>-<세대 수>다.
+    여기서 세대 수는 000001 부터 시작해 1씩 증가하는 0 패딩된 6자리 자연수다. 그리고 반드시 인덱스 템플릿과 연계해서 생성해야 하는 점,
+    문서 추가는 가능하지만 업데이트 작업은 불가능하다는 점, 반드시 @timestamp 필드가 포함된 문서만을 취급한다는 점도 alias를 통한 구성과 다르다.
+
+    데이터 스트림 기능 자체가 ILM과의 연계를 염두에 두고 개발된 기능이다.
+    PUT _ilm/policy/test-ilm-policy
+    {
+      "policy": {
+        "phases": {
+          "hot": {
+            "min_age": "0ms",
+            "actions": {
+              "rollover": {
+                "max_primary_shard_size" : "4gb", // 데이터 스트림 내에 생성된 뒷받침 인덱스의 샤드 크기가 4GB를 넘어서면 롤오버
+                "max_age": "1d" // 데이터 스트림 내에 생성된 뒷받침 인덱스 생성이 하루가 지나도 자동 롤오버
+              }
+            }
+          },
+          "delete" : {
+            "min_age" : "15d", // 생성된지 15일이 지난 인덱스는 삭제
+            "actions" : {
+              "delete" : {}
+            }
+          }
+        }
+      }
+    }
+
+    데이터 스트림은 반드시 인덱스 템플릿과 연계해야 한다
+    PUT _component_template/test-mappings
+    {
+      "template": {
+        "mappings": {
+          "properties": {
+            "@timestamp" : {
+              "type" : "date"
+
+            }
+          }
+        }
+      }
+    }
+
+    PUT _component_template/test-settings
+    {
+      "template": {
+        "settings": {
+          "index.lifecycle.name" : "test-ilm-policy",
+          "number_of_shards": 2,
+          "number_of_replicas": 1
+        }
+      }
+    }
+
+    위 두 컴포넌트 템플릿을 포함한 인덱스 템플릿을 생성
+    PUT _index_template/test-data-stream-template
+    {
+      "index_patterns" : ["my-data-stream-*"],
+      "data_stream" : {},
+      "composed_of" : ["test-mappings", "test-settings"]
+    }
+    여기서 중요한 것은 빈 data_stream을 포함시켜야 한다는 점이다. 이렇게 해야 데이터 스트림 전용 템플릿이 생성된다.
+    index_patterns에는 어떤 이름의 데이터 스트림이 이 인덱스 템플릿으로 생성될 것인지 지정한다.
+    composed_of에 지정한 컴포넌트 템플릿의 내용을 포함해 이 인덱스 템플릿에 지정한 내용은 데이터 스트림의 뒷받침 인덱스 생성 시 적용된다.
+
+    // 데이터 스트림 생성
+    PUT _data_stream/my-data-stream-first
+
+    // 문서 생성 - 데이터 스트림에는 신규 문서만 추가 가능
+    PUT my-data-stream-first/_create/1
+    {
+      "hello" : "world",
+      "@timestamp" : "2022-01-09T13:49:45.003Z"
+    }
+
+    response
+    {
+      "_index": ".ds-my-data-stream-first-2024.03.16-000001",
+      "_id": "1",
+      "_version": 1,
+      "result": "created",
+      "_shards": {
+        "total": 2,
+        "successful": 1,
+        "failed": 0
+      },
+      "_seq_no": 0,
+      "_primary_term": 1
+    }
+
+    데이터 스트림에는 문서 추가만 가능하다. 데이터 스트림을 대상으로 문서 업데이트나 삭제 작업을 수행하려면 update_by_query나 delete_by_query를
+    사용해야 한다. 혹은 작업 대상이 될 문서가 어떤 뒷받침 인덱스에 들어갔는지 그 이름을 알아낸 다음 뒷받침 인덱스 이름과 _id를 직접 지정하면
+    문서를 삭제할 수 있다. 문서를 업데이트하려면 여기에 _seq_no와 _primary_term까지 지정해야만 업데이트할 수 있다.
+
+    데이터 스트림을 삭제하려면 DELETE 메서드를 사용한다.
+    DELETE _data_stream/my-data-stream-first
+
+    데이터 스트림은 특정한 시스템의 모니터링용 지표 데이터를 수집하기 위한 용도등 그냥 문제 시간대의 데이터를 버려도 큰 문제가 되지 않는 경우에 사용하기 좋다.

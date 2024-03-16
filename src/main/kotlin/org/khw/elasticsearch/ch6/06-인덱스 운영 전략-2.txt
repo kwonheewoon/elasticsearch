@@ -1,0 +1,122 @@
+* reindex
+    reindex는 원본 인덱스 내 문서의 _source를 읽어서 대상 인덱스에 새로 색이나는 작업이다.
+
+    POST _reindex
+    {
+      "source": {
+        "index": "source_index"
+      },
+      "dest": {
+        "index": "target_index"
+      },
+      "conflicts": "abort" // 작업 도중 버전 충돌이 일어나면 작업은 해당 부분까지만 진행되고 취소, 충돌한 문서를 건너뛰려면 proceed 옵션 사용
+    }
+
+    reindex는 작업 특성상 매핑에서 _source가 활성화되어 있어야 한다. _source를 비활성화하면 reindex도 업데이트 작업도 수행할 수 없다.
+    운영 리스크를 고려하면 _source를 비활성화하는 일은 없어야 한다. 운영 중 발생하는 여러 이슈에 대처할 수 있는 여러가지 수단 중 가장 마지막에
+    선택할 수 있는 수단이 reindex이기 때문이다. 비활성화 상태에서는 엘라스틱서치의 메이저 버전 업그레이드도 어려워진다. 기본적으로 활성화 상태이며 이를
+    변경하지 않아야 한다.
+    synthetic source 기능을 사용하는 인덱스를 원본 인덱스로 지정할 경우 _source를 재조립하여 reindex 작업을 진행
+
+    ** 검색 쿼리를 지정해서 대상 제한
+        검색 쿼리를 지저해서 검색에 걸린 일부 문서만을 재인덱싱할 수도 있다. 다음과 같은 방법으로 수행
+
+        POST _reindex
+        {
+            "index" : "source_index",
+            "query" : {
+                // ...
+            },
+            "dest" : {
+                "index" : "target_index"
+            }
+        }
+
+    ** 스크립트 지정 reindex
+        POST source_index/_doc/1
+        {
+          "field_one" : "flash",
+          "field_two" : 1003,
+          "field_three" : "wonderland"
+        }
+
+        POST _reindex
+        {
+          "source": {
+            "index": "source_index"
+          },
+          "dest": {
+            "index": "target_index"
+          },
+          "script": {
+            "lang": "painless",
+            "source": """
+              ctx._source.field_one = 'test';
+              ctx._source.field_two--;
+              ctx._source.field_three = ctx._source.field_two;
+            """
+          }
+        }
+
+        GET target_index/_search
+
+    ** 비동기 실해과 스로틀링, 슬라이싱
+        reindex는 주로 관리적인 목적으로 호출하기 때문에 작업의 크기도 큰 경우가 많다.
+        reindex 요청을 보낸 뒤 작업이 끝날 때까지 대기하는 것은 효율적이지 않다. reindex도 update_by_query, delete_by_query처럼
+        wait_for_completion=false를 지정해서 작업을 tasks에 등록하고 비동기적 실행을 할 수 있다. 이후 tasks API를 통해 작업 진척 상황을
+        확인하거나 적업을 취소할 수 있다는 점 역시 동일
+        requests_per_second를 지정해 스로틀링을 적용하는 부분이나 slices를 지정해 슬라이싱을 적용하는 부분도 update_by_query,
+        delete_by_query와 동일하다
+
+        비동기 실행 (Asynchronous Execution)
+            Elasticsearch의 일부 작업은 비동기적으로 실행될 수 있습니다. 이는 작업을 시작한 후 즉시 응답을 받고, 작업이 백그라운드에서 계속 실행되게 함을 의미합니다. 이 방식은 클라이언트가 작업 완료를 기다리지 않고 다른 작업을 계속할 수 있게 해줍니다.
+
+            비동기 실행의 대표적인 예는 _reindex, _update_by_query, _delete_by_query API입니다. 이러한 API는 대량의 문서를 재색인, 업데이트, 삭제할 때 사용됩니다. 비동기 실행을 사용하면 작업 ID를 통해 작업의 상태를 조회하거나, 필요한 경우 작업을 취소할 수 있습니다.
+
+        스로틀링 (Throttling)
+            스로틀링은 시스템의 과부하를 방지하기 위해 작업의 실행 속도를 조절하는 기법입니다. Elasticsearch에서는 특히 _reindex, _update_by_query, _delete_by_query와 같은 대량 작업 시 리소스 사용을 제어하기 위해 스로틀링을 사용할 수 있습니다.
+
+            예를 들어, _reindex 작업을 할 때 requests_per_second 파라미터를 설정하여 초당 처리할 요청의 수를 제한할 수 있습니다. 이를 통해 클러스터에 과도한 부하가 가해지는 것을 방지하고, 다른 작업에도 충분한 리소스가 할당되도록 할 수 있습니다.
+
+        슬라이싱 (Slicing)
+            슬라이싱은 대규모 작업을 여러 개의 작은 단위로 나누어 병렬로 처리하는 기법입니다. 이는 작업의 완료 시간을 단축시키고, 리소스 사용을 최적화하는 데 도움을 줍니다.
+
+            예를 들어, _update_by_query나 _delete_by_query 작업을 할 때 slices 파라미터를 사용하여 작업을 여러 조각으로 나눌 수 있습니다. 각 슬라이스는 독립적으로 실행되며, 전체 작업의 처리 속도를 향상시킵니다.
+
+* shrink로 샤드 개수 줄이기
+    shrink는 샤드의 개수를 줄이면서 인덱스를 새로 생성하는 작업이다. 원본이 될 현재 인덱스 이름과 새로 생성할 인덱스의 이름을 지정하고 요청 분문에 샤드 개수를 지정
+
+    POST [현재 인덱스 이름]/_shrink/[새로 생성할 인덱스 이름]
+    PUT [현재 인덱스 이름]/_shrink/[새로 생성할 인덱스 이름]
+    {
+        "settings" : {
+            "index.number_of_replicas" : 2,
+            "index.number_of_shards" : 1
+        }
+    }
+
+    겉 보기에는 reindex와 차이가 없는 기능으로 보인다 reindex는 기본적으로 새 인덱스에 문서를 다시 새로 색인하는 과정이다.
+    새 인덱스를 생성할 때 설정이나 매핑을 원하는 대로 바꿔서 생성한 뒤 새 인덱스 설정에 맞춰 색인이 수행된다. shrink는 기존 인덱스의 세그먼트를
+    새 인덱스로 하드링크한다. 샤드 개수를 제외한 인덱스 설정과 매핑이 유지된다.
+
+* split로 샤드 개수 늘이기
+    split은 샤드의 개수를 늘리면서 인덱스를 새로 생성하는 작업이다.
+
+    POST [현재 인덱스 이름]/_split/[새로 생성할 인덱스 이름]
+        PUT [현재 인덱스 이름]/_split/[새로 생성할 인덱스 이름]
+        {
+            "settings" : {
+                "index.number_of_shards" : 4
+            }
+        }
+
+* 대량 색인이 필요할 때
+    PUT my_index/_settings
+    {
+        "refresh_interval" : "-1",
+        "number_of_replicas" : 0
+    }
+
+    refresh를 끄고 복제본 샤드 개수를 0으로 지정해서 복제본 생성을 중지하는 설정
+
+
