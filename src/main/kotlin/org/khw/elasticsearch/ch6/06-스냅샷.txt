@@ -1,0 +1,212 @@
+* 공유 파일 시스템 저장소
+    PUT _snapshot/my_snapshot
+    {
+      "type": "fs",
+      "settings": {
+        "location": "/my/nfs/mount/path"
+      }
+    }
+
+    type에는 어떤 종류의 저장소를 이용할지 지정한다. settings 밑에는 저장소 종류마다 요구하는 설정값을 지정한다.
+    fs 타입은 공유 파일 시스템을 저장소 타입으로 사용할 때 이용한다.
+    location 설정에는 공유 파일 시스템이 마운트된 경로를 입력한다. 이 마운트 경로는 사전에 elasticsearch.yml에 path.repo 설정으로 등록
+    path.repo도 path.data와 같이 여럿 등록할 수 있다.
+
+    path:
+      repo:
+        - /my/nfs/mount/path
+
+    저장소의 정보를 변경할 때도 동일한 API를 사용한다. 이 API는 덮어쓰기를 수행하기 때문에 변경할 내용을 포함해서 요청하면 된다.
+    스냅샷 저장소를 생성하거나 변경한 후에는
+    GET _snapshot/[저장소 이름]
+
+* HDFS 저장소
+    HDFS 저장소를 사용하기 위해서는 엘라스틱서치 공식 플러그인을 설치해야 한다.
+    $ bin/elasticsearch-plugin install repository-hdfs
+
+    플러그인은 설치하고 나서 노드를 재기동해야 적용된다. 또한 모든 노드에 플러그인을 설치해야 한다.
+    플러그인 설치와 롤링 리스타트가 끝나면 저장소를 생성
+
+    PUT _snapshot/my_snapshot
+    {
+      "type": "hdfs",
+      "settings": {
+        "uri" : "hdfs://MyName/",
+        "path" : "/path/to/repo/file",
+        "conf" : {
+          "dfs.nameservices" : "MyName",
+          // ...
+        }
+      }
+    }
+
+    settings 밑에는 크게 uri, path, conf를 지정한다. uri에는 HDFS의 주소를, path에는 HDFS의 어느 경로에 스냅샷 파일을 저장할 것인지를 지정
+    conf에는 HDFS의 core-site.xml과 hdfs-site.xml에서 사용하는 하둡 설정을 넣을 수 있다. conf를 통해 지정한 설정은 우선 적용된다.
+    HDFS 스냅샷 저장소 플러그인은 하둡 클라이언트를 사용한다. 즉, 기본적으로 플러그인의 classpath에서 하둡 설정 XML 파일들을 자동으로 읽어들인다.
+    config 디렉터리 밑에 설정 XML 파일들을 넣으면 된다. conf에 직접 지정하는 설정은 이 classpath에서 읽어들인 설정보다 적용 우선순위가 높다.
+
+* 소스 전용 저장소
+    이 외에 특수한 저장소로 최소 크기의 스냅샷을 찍도록 해주는 소스 전용 저장소가 있다.
+    소스 전용 저장소는 스냅샷에 데이터의 필드 값과 인덱스 메타데이터만을 저장한다.
+    색인이나 doc_values 구조 등은 저장하지 않는다. 소스 전용 저장소에 스냅샷으로 백업할 인덱스는 _source가 enabled 상태여야 한다.
+
+    PUT _snapshot/my_snapshot
+    {
+      "type": "source",
+      "settings": {
+        "delegate_type" : "fs",
+        "location" : "/my/nfs/mount/path"
+
+      }
+    }
+
+    type에는 source를 지정, settings 밑에 delegate_type으로 fs나 hdfs등 위임할 다른 종료의 저장소를 지정해야 한다.
+    그 외에 settings 밑에는 위임받은 저장소가 사용할 추가 설정을 지정한다.
+
+    소스 전용 저장소에서 복구한 인덱스는 색인 정보가 없기 때문에 match_all 등의 일부 쿼리를 제외하면 검색이 불가능하다. 정상적인 사용을 위해서는 스냅샷
+    복구가 끝난 후 새 인덱스로 reindex 작업을 수행해 일반 인덱스로 만들어야 한다.
+
+* 저장소 분리
+    엘라스틱서치의 스냅샷은 증분 백업 방식으로 동작한다. 이를 위해 스냅샷 작업을 시작할 때 저장소 내 다른 모든 스냅샷의 정보를
+    메모리로 올리는 작업을 선행한다. 따라서 저장소에 스냅샷을 많이 가진 저장소는 느려진다. 스냅샷 작업을 비동기로 처리하도록 요청하더라도 이 선행작업이
+    일단 완료되어야 스냅샷 작업을 시작했다는 비동기 응답을 돌려주기 때문에 유의할 필요가 있다.
+    이에 엘라스틱서치는 저장소가 너무 무거워지는 것을 막기 위해 한 저장소당 최대 스냅샷 개수를 제한하고 있다. 기본값은 500개
+    많은 스냅샷을 유지하기 위해 이 최댓값 설정을 올리는 방법은 좋지 않다. 너무 무거운 저장소는 마스터 노드에 부담이 되기 때문이다.
+
+
+* 스냅샷을 생성하고 조회
+    PUT _snapshot/[저장소 이름]/[스냅샷 이름]?wait_for_completion=false
+    {
+        "indices" : "my-index-202108*,my-index-202109*"
+    }
+    본문에 indices 부분에는 데이터를 백업할 인덱스를 지정한다. 쉼표나 와일드카드 문자를 이용해 여러 인덱스를 대상으로 지정할 수 있다
+    또한 주소줄에 wait_for_completion 매개변수를 지정해서 작업을 비동기로 요청할 수 있다. 기본값 true로, 스냅샷 작업이 종료된
+    이후 응답을 보내는 동기 요청이다
+
+    그러나 update_by_query나 reindex 등에서 wait_for_completion 매개변수를 사용해 비동기 요청을 할 때와 달리 스냅샷의 비동기 요청은
+    tasks에 작업을 등록하지 않는다. 작업 진행 상황은 스냅샷 조회 요청을 보내서 확인한다. 스냅샷 조회 API의 스냅샷 이름 부분에는
+    여러 스냅샷 이름을 쉼표로 연결하거나 와일드카드 문자를 사용해 복수의 스냅샷을 조회할 수 있다. 스냅샷 이름에 _all을 지정하면 저장소내의 모든
+    스냅삿을 조회한다.
+
+    GET _snapshot/[저장소 이름]/[스냅샷 이름]
+    {
+        "snapshots" : [
+            {
+                "snapshot" : "snapshot_06",
+                "uuid" : "xvWrtbklQqiwaXCVjW",
+                "version_id" : 7130299,
+                "version" : "8.4.2",
+                "indices" : [
+                    "some-index-20220215",
+                    ".tasks",
+                    ".kibana_8.4.2_001"
+                ],
+                "state" : "SUCCESS"
+
+            },
+            "feathre_states" : [
+                {
+                    "feature_name" : "kibana",
+                    "indices" : [
+                        ".kibana_8.4.2_001"
+                    ]
+                }
+            ]
+        ]
+    }
+
+    응답의 state 부분을 확인하면 작업이 끝났는지 여부를 알 수 있다. 작업이 아직 진행 중이라면 IN_PROGRESS 상태다. 엘라스틱서치는 동시에
+    둘 이상의 스냅샷 작업을 진행하지 않는다. 이 문제로 새 스냅샷 작업이 시작되지 않는다면 스냅샷 이름을 _all로 지정해 모든 스냅샷 목록을 조회해
+    어떤 작업이 IN_PROGRESS 상태인지 확인하면 된다.
+
+* 전역 상태와 feature
+    스냅샷을 찍을 때 요청 분문에 include_global_state라는 설정을 지정할 수 있다. 이는 현재 persistent 클러스터 설정이나
+    내부 시스템 인덱스의 내용 등 전역 상태를 스냅샷에 저장할 것인지 지정한다. 이 설정의 기본값은 true다. 그래서 .kibana_8.4.2_001 인덱스라는 내부 시스템
+    인덱스가 스냅샷에 자동으로 포함된 것이다. include_global_state가 false인 경우에는 포함되지 않는다.
+
+    -- include_global_state 전역상태 종류
+        ㄴ persistent 클러스터 설정
+        ㄴ 인덱스 템플릿
+        ㄴ 레거시 템플릿
+        ㄴ 인제스트 파이프라인
+        ㄴ 인덱스 생명 주기 정책
+        ㄴ 내부 시스템 인덱스의 데이터
+
+    ES는 feature라는 이름으로 관리하는 기능이 사용하는 인덱스를 내부 시스템 인덱스로 취급한다.
+
+    GET _features // feature 조회
+
+* 스냅샷 상태 상세 조회
+    GET _snapshot/[저장소 이름]/[스냅샷 이름]/_status // 스냅샷이 몇개의 파일을 포함하고 있는지, 크기는 얼마나 되는지, 증분된 파일은 몇 개인지
+    상세한 정보를 얻을 수 있다
+
+* 스냅샷에서 인덱스 복구하기
+    POST _snapshot/[저장소 이름]/[스냅샷 이름]/_restore
+    {
+        "indices" : "some-index-2021080*",
+        "include_global_state" : false,
+        "feature_states" : ["kibana"]
+    }
+
+    본문의 indices에는 스냅샷에 포함된 인덱스 중 복구를 원하는 인덱스를 지정한다. indices를 지정하지 않으면 전체 인덱스를 복구한다.
+    include_global_state는 전역 상태를 복구할지 여부를 지정한다. 기본값은 false, 이 값이 true인 경우 persistent 클러스터 설정,
+    레거시가 아닌 인덱스 템플릿, 인제스트 파이프라인, 인덱스 생명 주기 정책을 완전히 삭제한 뒤 스냅샷에 저장된 정보로 대체한다.
+    feature의 시스템 인덱스도 현재 데이터를 완전히 덮어 쓰는 방식으로 복구된다. 레거시 템플릿은 기존 데이터와 스냅샷에 저장된 데이터가
+    병합된다. 이러한 작업은 여파가 클 수 있으므로 전역상태를 복구하기 전에 반드시 신경을 써야한다.
+
+    feature_states에는 스냅샷의 feature_states에 저장된 부분 중 복구를 원하는 feature 목록을 지정한다.
+    마찬가지로 feature_states를 통해서 복구되는 시스템 인덱스나 설정값은 현재 데이터를 완전히 덮어쓰므로 유의해야 한다.
+    스냅샷에서 인덱스를 복구하는 작업도 주소줄 매개변수로 wait_for_completion=false를 지정해서 비동기로 요청할 수 있다.
+
+* 스냅샷 삭제
+    DELETE _snapshot/[저장소 이름]/[스냅샷 이름]
+
+    ES의 스냅샷은 증분 백업이다. 따라서 스냅샷이 삭제될 때는 그 스냅샷에 포함된 파일 이 다른 스냅샷에 사용되는지를 파악하고 다른 스냅샷에
+    영향을 주지 않는 파일만 삭제된다.
+
+    만약 IN_PROGRESS 상태로 작업 중인 스냅샷을 삭제할 경우 진행 중이던 작업을 취소하고 삭제를 진행한다.
+
+* 스냅샷 생명 주기 관리
+    스냅샷 생명 주기 관리(SLM)는 지정한 시각제 지정한 내용의 스냅샷을 찍고 지정한 기간보다 오래된 스냅샷은 삭제하는 등의 작업을 자동으로
+    수행하는 정책을 등록해 스냅샷을 관리하는 기능이다.
+
+    PUT _slm/policy/[정책 이름]
+    {
+        "name" : "<my-daily-snapshot-{now/d}>",
+        "schedule" : "0 30 17 * * ?",
+        "repository" : "fs-repo0",
+        "config" : {
+            "indices" : [
+                "<my-index-{now/d-2d}-*>"
+            ],
+            "include_global_state" : false
+        },
+        "retention" : {
+            "expire_after" : "7d",
+            "max_count" : 100
+        }
+    }
+
+    repository : 스냅샷 저장소의 이름을 지정
+    name : 자동으로 생성되는 스냅샷의 이름을 지정, 최종 스냅샷 이름은 스냅샷을 찌글 때 뒤에 랜덤한 접미사를 더 붙여
+    결정된다
+    schedule : 스냅샷을 어떤 시간에 찍을지 지정, cron 문법으로 작성한다. UTC 기준
+    config.indices : 어떤 인덱스의 스냅샷을 찍을지 지정한다. 날짜 시간 계산식을 지원하므로 시계열 인덱스를 대상으로 스냅샷을 찍을 때 활용하기 좋다.
+    config.include_global_state : 스냅샷에 전역 상태를 찍을지를 지정
+    retention : 스냅샷의 유지 정책을 지정한다. expire_after 7d로 지정하면 유지 기간이 7일로 지정된다.
+        이 외에도 max_count를 지정할 수 있다. max_count는 최대 몇 개까지 스냅샷을 유지할 것인지 지정
+
+    만료된 스냅샷 삭제는 엘라스틱서치는 SLM으로 추가한 정책들과는 별도로 만료된 스냅샷을 삭제하는 task를 특정 스케쥴에 맞춰 수행한다.
+    이 스케쥴은 slm.retention_schedule 클러스터 설정에 cron 문법으로 기입한다.
+
+    PUT _cluster/settings
+    {
+        "persistent" : {
+            "slm.retention_schedule" : "0 30 10 * * ?"
+        }
+    }
+
+    UTC 기준이며, 따로 지정하지 않으면 기본값은 0 30 1 * * ? 이다
+    중요한 것은 SLM 정책으로 찍은 스냅샷만 그 SLM 정책내의 retention 설정에 기반해 삭제된다는 점
+    SLM 정책을 통해 생성한 것이 아닌 스냅샷은 이 task로 삭제되지 않는다.
+
