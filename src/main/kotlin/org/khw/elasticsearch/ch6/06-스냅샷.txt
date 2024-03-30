@@ -60,7 +60,7 @@
       }
     }
 
-    type에는 source를 지정, settings 밑에 delegate_type으로 fs나 hdfs등 위임할 다른 종료의 저장소를 지정해야 한다.
+    type에는 source를 지정, settings 밑에 delegate_type으로 fs나 hdfs등 위임할 다른 종류의 저장소를 지정해야 한다.
     그 외에 settings 밑에는 위임받은 저장소가 사용할 추가 설정을 지정한다.
 
     소스 전용 저장소에서 복구한 인덱스는 색인 정보가 없기 때문에 match_all 등의 일부 쿼리를 제외하면 검색이 불가능하다. 정상적인 사용을 위해서는 스냅샷
