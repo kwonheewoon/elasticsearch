@@ -1,0 +1,90 @@
+* 루씬 쿼리의 매칭과 스코어링 과정
+    QueryPhase에서 쿼리에 매치되는 상위 문서를 수집하는 작업은 각 샤드레벨, 즉 루신 레벨에서 수행하는 작업이다.
+    이번 항에서는 해당 부분을 좀 더 자세히 설펴본다. 루씬이 어떻게 검색 작업을 수행하는 지흐름을 이해하면 어떤 쿼리가 무거운 쿼리이고 왜 문제가 되는지 이해하기 쉽다.
+
+* 주요 클래스와 인터페이스
+    - IndexSearcher : 루씬에서 검색을 담당하는 클래스다. 루씬 인덱스를 읽기 전용으로 열어 사용한다.
+    - QueryBuilder : 엘라스틱서치 레벨의 쿼리를 정의하는 인터페이스다. 엘라스틱서치 QueryBuilder에서 루씬 Query를 생성하는 로직을 제공한다.
+    - Query : 루씬 쿼리를 정의하는 추상 클래스다. IndexerSearcher에 상관없이 인스턴스를 재활용한다. Weight를 생성하는 로직을 제공
+    - Weight : Query의 내부 동작을 구현하는 추상 클래스다. IndexSearcher에 의존성 있는 작업이나 상태는 Weight에서 담당한다.
+        Scorer, BulkScorer를 생성하는 로직을 제공한다.
+    - Scorer: 유사도 점수 계산을 담당하는 추상 클래스다. DocIdSetIterator와 TwoPhseIterator를 제공한다.
+    - BulkScorer : 여러 문서를 대상으로 한 번에 유사도 점수를 계산하는 추상 클래스다. Scorer를 호출하면서 계산한다.
+    - DocIdSetIterator : 매치된 문서의 순회를 담당하는 추상 클래스다.
+    - TwoPhseIterator : 매치 여부를 판단하는 작업이 무거운 쿼리의 매치 작업을 두 개 페이즈로 나누어 진행하도록 하는 추상 클래스다.
+        간략한 매치를 먼저 수행해 후보를 좁히고 난 뒤 나중에 문서 수집 과정에서 최종 매치를 수행한다. Scorer 구현 시 이 클래스 채택은 선택사항 이다.
+    - Collector : 검색 결과를 수집하는 동작을 정의하는 인터페이스다. 매치된 문서를 DocIdSetIterator로 하나씩 순회하면서 수집한다.
+
+
+* IndexSearcher
+    IndexSearcher는 루씬 인덱스 내외 문서를 검색할 때 사용하는 클래스다. IndexSearcher는 최상위 IndexReader 하나를 갖고 있는데
+    이 IndexReader는 각각 독립적인 여러 LeafIndexReader로 구성된다. LeafIndexReader는 세그먼트 하나의 역색인이나 필드,
+    doc_values 등을 읽는 추상 클래스다.
+
+        - search(query, collector) : 엘라스틱서치는 QueryPhase에서 IndexSearcher의 search(query, collector)
+            메서드를 호출해 검색을 수행한다.
+
+* QueryBuilder
+    QueryBuilder는 엘라스틱서치 레벨의 쿼리를 정의하는 인터페이스다. 쿼리의 이름은 무엇인지, 이 쿼리의 DSL을 어떻게 파싱하고 어떻게 직렬화할지 등을 정의
+        - toQuery : 엘라스틱서치의 쿼리로 루씬의 Query를 생성한다.
+
+    toQuery 메서드는 이전 항에서 살펴봤던 SearchService에서 검색 문맥을 만들 때 호출된다.
+    검색 문맥은 대부분 ReaderContext 생성 직후에 생성한다. 조금 더 구체적으로는 executeSearchPhase, executeFetchPhase, executeDfsPhase에서 수행
+
+    만약 커스텀 쿼리를 작성해야 하더라도 QueryBuilder를 직접 구현할 일은 거의 없고, 보통 AbstractQueryBuilder 추상 클래스를 확장해 구현한다.
+    AbstractQueryBuilder의 toQuery 구현은 doToQuery 메서드에 위임되므로 소스코드를 읽을 때 이 점을 참고하는 것이 좋다.
+
+* Query
+    Query는 루씬 쿼리를 정의하는 추상 클래스다.
+
+        - createWeight: Weight를 생성한다. Query 인스턴스는 어느 IndexSearcher에 넘기더라도 문제없이 재활용할 수 있도록 설계됐다.
+            따라서 IndexSearcher에 의존성 있는 작업은 Weight에서 구현해야 한다.
+        - rewrite: rewrite는 Query의 상태를 파악한 후 다른 기본(primitive) Query의 조합으로 재구성해 최적화한다.
+            createWeight를 오버라이드해 직접 구현하는 쿼리를 기본 Query라고 한다. TermQuery,
+            BooleanQuery, MatchNoDocsQuery, PhraseQuery등이 있다. rewrite는 IndexSearcher에서 검색을 수행하기 전에
+            수행한다. 엘라스틱서치 내 QueryPhase, DfsPhase 등에서 명시적으로 호출하기도 한다.
+
+* Weight
+    Weight는 Query 내부 동작을 구현하는 추상 클래스다. IndexSearch에 의존성 있는 작업이나 상태를 담당한다.
+        - score: Scorer를 생성한다. LeafReader에 의존성 있는 작업이나 상태는 Scorer로 넘겨야 한다.
+        - bulkScorer: BulkScorer를 생성한다. IndexSearcher의 search 메서드 내부에서 호출된다
+        - explain: 쿼리의 수행의 중간 진행 과정과 유사도 점수 계산 과정을 자세히 설명한다.
+            엘라스틱서치에서 explain 매개변수를  true로 지정해 검색 API를 호출 시 FetchSubPhase 중 하나인 ExplainPhase에서
+            이 메소드를 호출한다. 설명을 만드는 과정에서 실제 검색이 진행되어야 하므로 explain 구현 안에서 Scorer도 만들어 가며
+            매치와 유사도 점수 계산 과정을 모두 구현해야 한다.
+
+
+* Scorer
+    Scorer는 유사도 점수 계산을 담당하는 추상 클래스다. LeafReader에 의존성 있는 작업이나 상태는 Scorer에서 담당한다.
+        - iterator: 매치된 문서의 순회를 담당하는 DocIdSetIterator를 반환한다. 이 부분이 매우 중요하다.
+            다시 말하면 DocIdSetIterator로 순회하는 문서는 모두 쿼리에 매치됐다는 뜻이다. Weight-Scorer-DocIdSetIterator의
+            순차 생성 과정 자체가 쿼리에 매칭되는 문서를 고르는 작업의 구현이다.
+
+        - twoPhaseIterator : 무거운 매치 작업을 두 개 페이즈로 나누어 진행하도록 하는 TwoPhaseIterator를 반환한다.
+        iterator 메서드에서 DocIdSetIterator 인스턴스 반환은 필수지만 twoPhaseIterator 메서드에서 TwoPhaseIterator 인스턴스 반환은
+        필수가 아니다. 두 개의 페이즈로 나누어 진행할 필요가 없다면 null을 반환한다.
+
+        - score : 현재 문서의 유사도 점수를 계산해 반환한다. 반환 타입은 float다. 현재 문서란 DocIdSetIterator가 현재 가리키는 문서를 뜻 한다.
+        - docId : 현재 문서의 doc ID를 반환한다. 루씬의 각 문서는 doc ID라는 고유한 32비트 숫자로 식별된다.
+            루씬에서 doc ID라고 표현하는 값은 두 종류로 세그먼트 내에서의 로컬 doc ID와 전체 범위의 글로벌 doc ID가 있다.
+            세그먼트에 문서가 들어온 순서대로 0부터 로컬 doc ID가 매겨진다. 또한 세그먼트마다 기준 doc ID 오프셋이 있다. 이 기준 doc ID 오프셋과
+            로컬 doc ID를 단순 합산한 것이 글로벌 doc ID다. 세그먼트 병합되고 doc ID도 다시 매겨지기 때문에 루씬의 내부 API를 벗어난
+            애플리케이션 영역에 doc ID를 저장해 두고 사용하면 안 된다. 여기서 반환하는 doc ID는 로컬 doc ID 이다.
+
+* BulkScorer
+    여러 문서를 대상으로 한 번에 유사도 점수를 계산하는 추상 클래스다. Weight의 bulkScorer 메서드를 따로 오버라이드 하지 않았다면
+    기본 구현인 DefaultBulkScorer 클래스를 반환한다. 여러 문서를 한 번에 다룰 때 특별히 최적화할 여지가 있는 것이 아니라면 이 기본 구현을 사용한다.
+    기본 구현은 Collector가 DocIdSetIterator와 TwoPhaseIterator를 이용해 문서를 하나씩 순회하며 Scorer의 score로 유사도 점수를 계산해 문서를 수집하게 한다.
+
+        - score: 주어진 범위 내 문서의 유사도 점수를 계산하며 문서를 수집한다. IndexSearcher의 search 메서드 내부에서 호출된다.
+
+
+* DocIdSetIterator
+    DocIdSetIterator는 매치된 문서의 순회를 담당하는 추상 클래스다.
+
+        - cost : DocIdSetIterator를 순회하는 데에 들어가는 비용의 추정값을 반환한다. 일반적으로는 매치된 문서의 수를 추정해 반환한다.
+            정확한 비용을 반환하는 것이 목적이 아니기 때문에 각 쿼리 사정에 맞춰 다양한 값을 반환한다. 적당한 근사값을 반환하거나
+            심지어는 하드코딩된 상수를 반환하기도 한다.
+        - docId : 현재 문서의 doc ID를 반환한다.
+        - advance(target) : doc ID가 target 값 이상인 첫 번째 매치되는 문서로 DocIdSetIterator 순회를 전진시킨다.
+        - nextDoc : 매치된 다음 문서로 DocIdSetIterator 순회를 전진시킨다. 일반적으로는 advance(docID() + 1)로 구현한다.
