@@ -23,6 +23,18 @@
 
         - search(query, collector) : 엘라스틱서치는 QueryPhase에서 IndexSearcher의 search(query, collector)
             메서드를 호출해 검색을 수행한다.
+        ** 코드
+            Directory directory = FSDirectory.open(Paths.get("/path/to/index"));
+            IndexReader reader = DirectoryReader.open(directory);
+            IndexSearcher searcher = new IndexSearcher(reader);
+
+            Query query = new TermQuery(new Term("field", "value"));
+            TopDocs results = searcher.search(query, 10); // 상위 10개 문서 검색
+            for (ScoreDoc scoreDoc : results.scoreDocs) {
+                Document doc = searcher.doc(scoreDoc.doc);
+                System.out.println(doc.get("field"));
+            }
+
 
 * QueryBuilder
     QueryBuilder는 엘라스틱서치 레벨의 쿼리를 정의하는 인터페이스다. 쿼리의 이름은 무엇인지, 이 쿼리의 DSL을 어떻게 파싱하고 어떻게 직렬화할지 등을 정의
@@ -33,6 +45,9 @@
 
     만약 커스텀 쿼리를 작성해야 하더라도 QueryBuilder를 직접 구현할 일은 거의 없고, 보통 AbstractQueryBuilder 추상 클래스를 확장해 구현한다.
     AbstractQueryBuilder의 toQuery 구현은 doToQuery 메서드에 위임되므로 소스코드를 읽을 때 이 점을 참고하는 것이 좋다.
+        ** 코드
+            Query query = new QueryBuilder(analyzer).createBooleanQuery("field", "text");
+
 
 * Query
     Query는 루씬 쿼리를 정의하는 추상 클래스다.
@@ -43,6 +58,9 @@
             createWeight를 오버라이드해 직접 구현하는 쿼리를 기본 Query라고 한다. TermQuery,
             BooleanQuery, MatchNoDocsQuery, PhraseQuery등이 있다. rewrite는 IndexSearcher에서 검색을 수행하기 전에
             수행한다. 엘라스틱서치 내 QueryPhase, DfsPhase 등에서 명시적으로 호출하기도 한다.
+        ** 코드
+            Query query = new TermQuery(new Term("field", "value"));
+
 
 * Weight
     Weight는 Query 내부 동작을 구현하는 추상 클래스다. IndexSearch에 의존성 있는 작업이나 상태를 담당한다.
@@ -52,6 +70,11 @@
             엘라스틱서치에서 explain 매개변수를  true로 지정해 검색 API를 호출 시 FetchSubPhase 중 하나인 ExplainPhase에서
             이 메소드를 호출한다. 설명을 만드는 과정에서 실제 검색이 진행되어야 하므로 explain 구현 안에서 Scorer도 만들어 가며
             매치와 유사도 점수 계산 과정을 모두 구현해야 한다.
+
+        ** 코드
+            Query query = new TermQuery(new Term("field", "value"));
+            IndexSearcher searcher = new IndexSearcher(reader);
+            Weight weight = query.createWeight(searcher, ScoreMode.COMPLETE, 1.0f);
 
 
 * Scorer
@@ -71,12 +94,23 @@
             로컬 doc ID를 단순 합산한 것이 글로벌 doc ID다. 세그먼트 병합되고 doc ID도 다시 매겨지기 때문에 루씬의 내부 API를 벗어난
             애플리케이션 영역에 doc ID를 저장해 두고 사용하면 안 된다. 여기서 반환하는 doc ID는 로컬 doc ID 이다.
 
+        ** 코드
+            DocIdSetIterator iterator = weight.scorer(context).iterator();
+            int docId;
+            while ((docId = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                float score = scorer.score(); // 현재 문서의 점수 계산
+            }
+
+
 * BulkScorer
     여러 문서를 대상으로 한 번에 유사도 점수를 계산하는 추상 클래스다. Weight의 bulkScorer 메서드를 따로 오버라이드 하지 않았다면
     기본 구현인 DefaultBulkScorer 클래스를 반환한다. 여러 문서를 한 번에 다룰 때 특별히 최적화할 여지가 있는 것이 아니라면 이 기본 구현을 사용한다.
     기본 구현은 Collector가 DocIdSetIterator와 TwoPhaseIterator를 이용해 문서를 하나씩 순회하며 Scorer의 score로 유사도 점수를 계산해 문서를 수집하게 한다.
 
         - score: 주어진 범위 내 문서의 유사도 점수를 계산하며 문서를 수집한다. IndexSearcher의 search 메서드 내부에서 호출된다.
+
+        ** 코드
+            weight.bulkScorer(context).score(collector, context.reader().getLiveDocs(), 0, DocIdSetIterator.NO_MORE_DOCS);
 
 
 * DocIdSetIterator
@@ -88,3 +122,31 @@
         - docId : 현재 문서의 doc ID를 반환한다.
         - advance(target) : doc ID가 target 값 이상인 첫 번째 매치되는 문서로 DocIdSetIterator 순회를 전진시킨다.
         - nextDoc : 매치된 다음 문서로 DocIdSetIterator 순회를 전진시킨다. 일반적으로는 advance(docID() + 1)로 구현한다.
+
+        ** 코드
+            DocIdSetIterator iterator = scorer.iterator();
+            int docId;
+            while ((docId = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                // 현재 문서에 대한 작업 수행
+            }
+
+
+
+
+* TwoPhaseIterator
+        ** 코드
+            TwoPhaseIterator twoPhaseIterator = scorer.twoPhaseIterator();
+            if (twoPhaseIterator != null) {
+                DocIdSetIterator approximation = twoPhaseIterator.approximation();
+                while ((docId = approximation.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                    if (twoPhaseIterator.matches()) {
+                        // 매칭 확인 후 처리
+                    }
+                }
+            }
+
+
+* Collector
+    Collector collector = new TopScoreDocCollector(10); // 상위 10개 문서 수집
+    searcher.search(query, collector);
+    TopDocs topDocs = ((TopScoreDocCollector)collector).topDocs();
