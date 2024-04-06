@@ -134,6 +134,19 @@
 
 
 * TwoPhaseIterator
+    매치 여부를 판단하는 작업이 무거운 쿼리의 매치 작업을 두 개 페이즈로 나누어 진행하도록 하는 추상클래스
+    비용이 저렴한 간략한 매치를 먼저 수행해 후보를 좁히고 난 뒤 나중에 문서 수집 과정에서 최종 매치를 수행한다.
+
+    - approximation : 간략한 매치 조건을 만족한 문서를 순회하는 DocIdSetIterator를 반환한다. 즉
+        DocIdSetIterator를 만들어 반환하는 작업 자체가 간략한 매치를 수행하는 작업이다.
+
+    - matches : 현재 문서가 실제 매치되는지 체크, 비용이 비싼 작업이 여기에 들어간다. approximation 메서드에서
+        반환하는 DocIdSetIterator의 문서가 matches의 수행 대상이다.
+        DefaultBulkScorer에서 문서를 수집할 때 등 다양한 곳에서 호출된다.
+
+    - matchCost : matches 메서드를 호출할 때 들어가는 비용을 추정해서 반환한다.
+
+
         ** 코드
             TwoPhaseIterator twoPhaseIterator = scorer.twoPhaseIterator();
             if (twoPhaseIterator != null) {
@@ -147,6 +160,96 @@
 
 
 * Collector
+    Collector는 검색 결과를 수집하는 동작을 정의하는 인터페이스다. 유사도 점수나 정렬 기준 등을 계산하거나 확인하며 상위 결과를
+    수집하는 동작 등을 수행한다. Collector의 getLeafCollector 메서드는 LeafCollector 인스턴스를 만들어 반환한다.
+    엄밀히는 이 LeafCollector가 각 LeafRead 문맥에서 문서 수집 작업을 담당한다.
+    Collector 구현체는 LeafCollector를 생성하는 작업, 다음 LeafReader 문맥에서 문서를 수집하기 위해 LeafCollector 교체 시
+    필요한 작업, 수집된 문서를 저장하거나 반환하는 작업 등을 담당한다.
+
+    - setScorer : Collector 인스턴스로 Scorer 인스턴스를 넘겨받는다. LeafCollector가 교체될 때 수행해야 할 작업이 있다면 여기서 수행한다.
+    - collect : 현재 문서를 최종 결과에 포함시킬지 판단하여 수집한다. 쿼리에 매칭디는 문서마다 한 번씩 collect 작업을 수행한다.
+        이때 인자로 넘겨받는 doc ID는 세그먼트의 로컬 doc ID다. DocIdSetIterator를 순회하며 문서를 수집하다가 더 이상 순회를 할 필요가 없다면
+        CollectionTerminatedException 예외를 던져서 순회를 강제 종료할 수 있다. IndexSearcher는 이 예외를 삼켜 버리고 다음 LeafReader
+        문맥에서 수집을 재개한다. 엘라스틱서치가 추가한 EarlyTerminatingCollector 같은 구현체는 EarlyTerminationException이라는
+        다른 예외를 던진 뒤 직접 예외를 잡아 사용하기도 한다.
+
+
+    ** Collector BulkScorer 동작을 표현한 의사 코드 disi는 DocIdSetIterator 인스턴스 의미
+        for(LeafReaderContext ctx : leaves){
+            final LeafCollector leafCollector = collector.getLeafCollector(ctx);
+            leafCollector.setScorer(scorer);
+
+            for (int doc = disi.nextDoc(); disi != NO_MORE_DOCS; disi.nextDoc()) {
+                if(삭제된 문서가 아니라면 && twoPhaseIterator.matches()){
+                    leafCollector.collect(doc);
+                }
+            }
+        }
+
     Collector collector = new TopScoreDocCollector(10); // 상위 10개 문서 수집
     searcher.search(query, collector);
     TopDocs topDocs = ((TopScoreDocCollector)collector).topDocs();
+
+    한 LeafReader 문맥에서 DocIdSetIterator를 순회하며 매칭된 문서마다 LeafCollector의 collect 메서드를 호출하며
+    문서를 수집한다. collect의 구현 내용에 따라 최종 문서 수집 여부가 결정된다. Scorer의 TwoPhaseIterator가 null이 아니었다면
+    이때 matches를 호출해 최종 매치 여부를 판단한다. DocIdSetIterator를 모두 순회한 뒤에는 다음 LeafCollector를 만들어 같은 작업을
+    반복한다. LeafCollector가 교체될 때마다 setScorer를 호출한다.
+
+    Collector가 유사도 점수 계산을 수행할 필요가 없는 경우에는 점수 계산을 모두 건너뛰도록 구현한다.
+    이 경우 setScorer 메서드 구현에서도 아무 작업을 수행할 필요가 없고 collect 메서드 구현에서도 scorer를 활용할 필요가 없다.
+    하지만 유사도 점수 계산이 필요하다면 넘겨받은 Scorer인스턴스를 들고 있도록 setScorer 메서드를 구현해야 한다. collect 메서드도
+    이 Scorer 인스턴스의 score 메서드를 호출해서 현재 hit의 유사도 점수를 계산하도록 구현해야 한다.
+
+
+* bool 쿼리의 검색 동작 순서와 DocIdSetIterator 순회
+    * rewrite, cost
+        엘라스틱서치는 검색 요청을 받으면 내부적으로 쿼리를 루씬의 여러 쿼리로 쪼갠 뒤 조합해 재작성한다.
+        이때 Query의 rewrite 메서드를 활용한다. 그 이전에 엘라스틱서치의 QueryBuilder이나 TransportSearchAction 단계 등에서도
+        최대한 최적화를 하며 쿼리를 재작성한다.
+
+        그 뒤 쪼개진 각 쿼리를 수행 시 얼마나 비용이 소모되는지 내부적으로 추정한다.
+        비용과 효과를 추정하고 유리할 것으로 생각되는 부분을 먼저 수행한다. 이때는 DocIdSetIterator의 cost 메서드로 비용을 체크한다.
+
+        하부 쿼리 하나를 통째로 수행한 뒤 다음 하부 쿼리 하나를 수행하는 것도 아니다. 여러 쿼리를 만족하는 문서 후보들을 뽑아 놓고 문서에 대한
+        실제 조건 만족 여부를 하나씩 체크하는 과정에서 여러 하부 쿼리를 병렬적으로 수행하기도 한다. bool 쿼리를 담당하는 Weight 인터페이스의
+        구현체는 BooleanWeight다. BooleanWeight는 쿼리의 세부 내용에 따라 다양한 종류의 최적화된 Scorer를 만들어 반환한다.
+
+    * conjunction 검색
+        conjunction 검색은 AND 성격의 검색으로 주어진 쿼리의 매치 조건을 모두 만족해야 최종 매치된 것으로 판정한다.
+
+    * disjunction 검색
+        disjunction 검색은 OR 성격의 검색으로 주어진 쿼리의 매치 조건 중 하나만 만족해도 최종 매치된 것으로 판단한다.
+
+    conjunction, disjunction 모두 하위 Query 마다 Weight에 이어 Scorer를 미리 만들어 둔 다음 이 하위 Scorer들을 가지고 최종 Scorer를 만든다.
+
+    conjunction Scorer는 하위 Scorer 목록에서 각각 DocIdSetIterator를 뽑는다. 그 다음 각 DISI를 lead2라고 하자. 그보다 큰
+    cost를 가진 DISI도 cost 순으로 others라는 이름의 리스트에 담아둔다.
+
+    먼저 lead1.advance(target) 을 수행하고 이후 lead1의 현재 doc ID를 가져와 doc이라는 변수에 담는다.
+    lead2.advance(doc)을 수행한 뒤 lead2의 현재 doc ID를 가져와 같은 문서를 가리키는지 확인
+    같지 않다면 다시 lead1의 advance를 호출하고 doc ID를 확인해 같은지 확인한다.
+    두 DISI가 같은 문서를 가리킬 때까지 lead1과 lead2의 advance를 번갈아 가며 진행한다. lead1과 lead2가 같은 문서를 가리킬 때까지 전진했다면
+    others에 남아 있는 세 번째 이하의 DISI도 advance시키며 모든 DISI가 같은 문서를 가리키는지 체크한다.
+    세번째 이하의 DISI를 advance로 순회하는 도중 더 큰 doc ID가 나왔다면 다시 처음으로 돌아가 lead1과 lead2가 같은 문서를 가리킬때까지
+    advance로 순회한다. 모든 DISI가 같은 문서를 가리킬 때 advance를 멈춘다. 모든 하위 DISI가 같은 문서를 가리킨다는 것은 즉 그 문서는 모든 하위쿼리에 매치됐다는 뜻이다.
+
+    TwoPhaseIterator가 같이 들어간다면 최상위 TwoPhaseIterator는 하위 TwoPhaseIterator를 matchCost 순으로 정렬해 둔다.
+    이후 matches 메서드가 호출될 때는 matchCost가 낮은 하위 TwoPhaseIterator의 matches 메서드부터 호출한다.
+
+* disjunction 검색과 건너띄기
+    disjunction 검색도 하위 Scorer와 DISI를 이용해 최상위 레벨의 Scorer와 DISI를 생성한다.
+    OR 검색이므로 개념적으로 advance(taraget)은 하위 DISI의 advance(target) 결과 중 최솟값을 반환한다.
+    구현은 하위 DISI를 현재 doc ID를 기준으로 하는 최소 힙을 이용한다.
+    유사도 점수를 계산해서 상위 k개의 문서를 수집하면 되는 상황이라면 현재까지 수집된 k번째문서보다 점수 경쟁력이 떨어지는 문서나 문서의 블록을
+    적극적으로 건너띄는 여러가지 최적화 방법을 함께 사용한다. 상위 k개의 문서를 수집한다면 conjunction 성격의 DISI에서도 유사한 최적화
+    방법을 함께 사용한다. Scorer의 setMinCompetitiveScore와 advanceShallow 메서드 등을 활용한다.
+
+
+* 쿼리 문맥과 필터 문맥
+    쿼리 문맥의 쿼리든 필터 문맥의 쿼리든 수행 순서와는 관련이 없다.
+    DocIdSetIterator 인스턴스 생성이 끝난 후에야 LeafCollector가 DISI를 순환하며 collect 메서드를 호출하고 그 안에서 Scorer의 scorer를 호출한다.
+    이러한 흐름 자체가 쿼리 문맥, 필터 문맥 상관없이 하위 쿼리에 매치되는 후보군 자체를 일단 다 뽑는다는 뜻이다. 그 이후 최상위 DISI의 순회 과정에서
+    conjunction, disjunction, 최적화 등을 수행해 매치되는 문서가 하나 나오고 나면 그 단일 문서를 대상으로 유사도 점수 계산을 수행한다.
+    필터 문맥의 쿼리는 이때 score를 호출해 점수를 계산하는 비용을 아끼는 것이지 먼저 수해오디는 것이 아니다. 그리고 이렇게 매치되는
+    단일 문서마다 유사도 점수를 계산하며 수집한다는 것은 여러 하위 쿼리의 동작 일부가 병렬적으로 수행된다는 뜻이다.
+
